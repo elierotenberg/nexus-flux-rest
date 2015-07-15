@@ -4,11 +4,10 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import createError from 'http-errors';
-import { DEFAULT_SALT } from './common';
 const __DEV__ = process.env.NODE_ENV === 'development';
 
 class VolatileRESTLink extends Link {
-  constructor({ req, res, salt = DEFAULT_SALT }) {
+  constructor({ req, res, salt }) {
     if(__DEV__) {
       req.should.be.an.Object
         .which.has.property('body')
@@ -21,21 +20,24 @@ class VolatileRESTLink extends Link {
       salt.should.be.a.String;
     }
     super();
-    const ev = Client.Event.fromJS(req.body[salt]);
-    if(__DEV__) {
-      ev.should.be.an.instanceOf(Client.Event.Action);
-    }
-    this.receiveFromClient(ev);
-    this.lifespan.release();
-    res.status(200).end();
+    const { path, body } = req;
+    const { [salt]: params } = body;
+    setImmediate(() => {
+      const ev = new (Client.Event.Action)({ path, params });
+      this.receiveFromClient(ev);
+      res.status(200).end();
+      this.lifespan.release();
+    });
   }
 }
 
 class RESTServer extends Server {
-  constructor({ salt = DEFAULT_SALT, port = null, headers = {}, expressUse = [] }) {
+  salt = null;
+
+  constructor({ salt, port = null, headers = {}, expressUse = [] }) {
     super();
     this.salt = salt;
-    express()
+    const app = express()
     .use(...expressUse.concat(cors()))
     .use(bodyParser.json())
     .get('*', (req, res) =>
@@ -50,9 +52,19 @@ class RESTServer extends Server {
         }
       })
     )
-    .post('*', (req, res) => new VolatileRESTLink({ req, res, salt }))
+    .post('*', (req, res) => this.acceptLink(new VolatileRESTLink({ req, res, salt })))
     .listen(port);
+    this.lifespan.onRelease(() => app.close());
   }
 
-
+  serveStore({ path }) {
+    return Promise.try(() => {
+      if(__DEV__) {
+        path.should.be.a.String;
+      }
+      throw createError(404, 'Virtual method invocation, you have to define serveStore function');
+    });
+  }
 }
+
+export default RESTServer;
